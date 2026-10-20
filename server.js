@@ -21,6 +21,19 @@ const http = require("http");
 const { Server } = require("socket.io");
 const fs = require("fs");
 const app = express();
+const express = require('express');
+const session = require('express-session');
+const MongoStore = require('connect-mongo');
+const app = express(); 
+app.use(session({
+  secret: process.env.SESSION_SECRET || '8f4d92a1c6b7e5f3a0d7c2b9e4a8f1d0c5b3a6e9f2d8c7b4a1e0f9d8c7b6a5e4',
+  resave: false,
+  saveUninitialized: false,
+  store: MongoStore.create({ 
+    mongoUrl: process.env.MONGO_URI 
+  }),
+  cookie: { maxAge: 1000 * 60 * 60 * 24 }
+}));
 const server = http.createServer(app);
 const io = new Server(server, { pingInterval: 2000, pingTimeout: 5000 });
 
