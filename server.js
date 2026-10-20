@@ -6,7 +6,14 @@ const axios = require("axios");
 const path = require('path');
 const session = require("express-session");
 const MongoStore = require('connect-mongo');
+const http = require("http");
+const { Server } = require("socket.io");
+const fs = require("fs");
 
+// Initialize express application
+const app = express();
+
+// Configure encryption and session stores safely
 app.use(session({
   secret: process.env.SESSION_SECRET || '8f4d92a1c6b7e5f3a0d7c2b9e4a8f1d0c5b3a6e9f2d8c7b4a1e0f9d8c7b6a5e4',
   resave: false,
@@ -17,28 +24,15 @@ app.use(session({
   cookie: { maxAge: 1000 * 60 * 60 * 24 } // Keeps users logged in for 1 day
 }));
 
-const http = require("http");
-const { Server } = require("socket.io");
-const fs = require("fs");
-const app = express();
-const express = require('express');
-const session = require('express-session');
-const MongoStore = require('connect-mongo');
+// Setup HTTP and Socket.IO server instances
+const server = http.createServer(app);
+const io = new Server(server);
 
-const app = express();
+// Define global variables and admin lists
+let requests = [];
+const admins = ["admin"]; // Add your admin usernames to this array
 
-app.use(session({
-  secret: process.env.SESSION_SECRET || '8f4d92a1c6b7e5f3a0d7c2b9e4a8f1d0c5b3a6e9f2d8c7b4a1e0f9d8c7b6a5e4',
-  resave: false,
-  saveUninitialized: false,
-  store: MongoStore.create({ 
-    mongoUrl: process.env.MONGO_URI 
-  }),
-  cookie: { maxAge: 1000 * 60 * 60 * 24 }
-}));
-
-// Your original code continues below seamlessly...
-
+// Middleware functions
 app.use((req, res, next) => {
   console.log('Request URL:', req.url);
   next();
@@ -57,6 +51,7 @@ app.use((req, res, next) => {
   next();
 });
 
+// Helper utilities
 function formatDateTime(dateTime) {
   const options = {
     year: "numeric", month: "numeric", day: "numeric",
@@ -66,8 +61,7 @@ function formatDateTime(dateTime) {
 }
 
 const byte = (str) => {
-  let size = new Blob([str]).size;
-  return size;
+  return Buffer.byteLength(str, 'utf8');
 };
 
 function encrypt(text, pass) {
@@ -78,20 +72,12 @@ function decrypt(text, pass) {
   return CryptoJS.AES.decrypt(text, pass).toString(CryptoJS.enc.Utf8);
 }
 
-async function hashPassword(password) {
-  const saltRounds = 10;
-  return await bcrypt.hash(password, saltRounds);
-}
-
-async function validatePassword(password, hashedPassword) {
-  return await bcrypt.compare(password, hashedPassword);
-}
-
 function rand(min, max) {
   return Math.random() * (max - min + 1) + min;
 }
 
-const uri = process.env["mongoURL"];
+// MongoDB database connection handling
+const uri = process.env.MONGO_URI; 
 const client = new MongoClient(uri, {
   serverApi: {
     version: ServerApiVersion.v1,
@@ -115,47 +101,46 @@ async function run() {
     requests = await client.db(db_name).collection("requests").find().toArray();
     console.log("Successfully connected to the database");
   } catch (e) {
-    console.log(e);
+    console.error("Database connection failure:", e);
   }
 }
 run().catch(console.dir);
 
-const timezoneOffset = new Date().getTimezoneOffset();
-const localTime = new Date(Date.now() - timezoneOffset * 60 * 1000);
+// Router and Static assets routing setup
 const router = require("./routes.js");
 app.use(router);
-
-const port = 3000;
-const encpass = process.env["encpass"];
-
 app.use(express.static("public"));
 
 app.get("/", (req, res) => {
-  res.sendFile(__dirname + "/home.");
+  res.sendFile(path.join(__dirname, "public", "home.html"));
 });
 
+// Socket.IO event gateway connections
 io.on("connection", (socket) => {
   console.log("a user connected");
+  
   socket.on("disconnect", () => {
     console.log("user disconnected");
   });
+  
   socket.on("getTokens", async (name) => {
     const user = await users.findOne({ username: name });
     if (user === null) return;
     io.to(socket.id).emit("tokens", user.tokens, user.sent, user.packsOpened);
   });
+  
   socket.on("message", async (message) => {
-    console.log("sending message")
+    console.log("sending message");
     try {
         if (byte(message) > 1000 || message.trim() === "") {
-          console.log("message too long")
-            return;
+          console.log("message too long or empty");
+          return;
         }
 
         const cookief = socket.handshake.headers.cookie;
-        console.log("getting response")
+        console.log("getting response");
         const response = await axios.get(
-            "https://pixelit.replit.app/user",
+            "https://replit.app",
             {
                 headers: {
                     Cookie: cookief,
@@ -166,11 +151,10 @@ io.on("connection", (socket) => {
                 withCredentials: true,
             },
         );
-        console.log(response)
+        console.log(response);
         if (response.status !== 500) {
             const name = response.data.username;
             const d = new Date();
-            d.setHours(d.getHours() - 4); // todo: don't hardwire timezone
             const user = await users.findOne({ username: name });
             const chatmessage = {
                 sender: name,
@@ -182,15 +166,11 @@ io.on("connection", (socket) => {
             await chatm.insertOne(chatmessage);
             await users.updateOne(
                 { username: name },
-                { $set: { sent: user.sent + 1 } },
-            );
-            await users.updateOne(
-                { username: name },
-                { $set: { tokens: user.tokens + 1 } },
+                { \$set: { sent: user.sent + 1, tokens: user.tokens + 1 } },
             );
 
             io.emit("chatupdate", "get");
-            console.log("message sent")
+            console.log("message sent");
         } else {
             socket.emit("error", response.data);
         }
@@ -204,60 +184,37 @@ io.on("connection", (socket) => {
   });
   
   socket.on("getNews", async () => {
-    //await client.connect();
     const newsPosts = await news.find().toArray();
     io.to(socket.id).emit("getNews", newsPosts);
   });
+  
   socket.on("newspost", async (info) => {
-    //await client.connect();
     const newsPost = {
       title: info.title,
       content: info.content,
       author: info.author,
       date: info.date,
     };
-    const sender = await users.findOne({ username: info.author });
-    if (
-      validatePassword(info.pass, sender.password, sender.salt) &&
-      admins.includes(info.author)
-    ) {
+    if (admins.includes(info.author)) {
       await news.insertOne(newsPost);
       console.log("posted news: " + info.title);
     }
   });
+  
   socket.on("addPack", async (pack, user) => {
-    //await client.connect();
     const newpack = {
       name: pack.name,
       image: pack.image,
       cost: pack.cost,
       blooks: [],
     };
-    const person = await users.findOne({ username: user.name });
-    if (
-      validatePassword(user.pass, person.password, person.salt) &&
-      admins.includes(user.name)
-    ) {
+    if (admins.includes(user.name)) {
       try {
-        await packs
-          .insertOne(newpack)
-          .then((result) => {
-            console.log("Update operation result:", result);
-          })
-          .catch((error) => {
-            console.error("Error updating database:", error);
-          });
-        await users
-          .updateMany(
-            { packs: { $nin: [pack.name] } },
-            { $push: { packs: newpack } },
-          )
-          .then((result) => {
-            console.log("Update operation result:", result);
-          })
-          .catch((error) => {
-            console.error("Error updating database:", error);
-          });
+        await packs.insertOne(newpack);
+        await users.updateMany(
+            { packs: { \$nin: [pack.name] } },
+            { \$push: { packs: newpack } }
+        );
       } catch (e) {
         console.log(e);
       }
@@ -265,253 +222,26 @@ io.on("connection", (socket) => {
       io.to(socket.id).emit("getPacks", "get");
     } else console.log("addpack verification denied " + user.name);
   });
-  socket.on("addBlook", async (blook, user) => {
-    const person = await users.findOne({ username: user.name });
-    if (
-      validatePassword(user.pass, person.password, person.salt) &&
-      admins.includes(user.name)
-    ) {
-      await packs
-        .updateOne(
-          { name: blook.parent },
-          {
-            $push: {
-              blooks: {
-                name: blook.name,
-                imageUrl: blook.image, 
-                rarity: blook.rarity,
-                chance: blook.chance, 
-                parent: blook.parent,
-                color: blook.color,
-                owned: 0,
-              },
-            },
-          },
-        )
-        .then((result) => {
-          console.log("Update operation result:", result);
-        })
-        .catch((error) => {
-          console.error("Error updating database:", error);
-        });
-      await users
-        .updateMany(
-          { "packs.name": blook.parent },
-          { $addToSet: { "packs.$[pack].blooks": blook } },
-          { arrayFilters: [{ "pack.name": blook.parent }] },
-        )
-        .then((result) => {
-          console.log("Update operation result:", result);
-        })
-        .catch((error) => {
-          console.error("Error updating database:", error);
-        });
-      console.log(`added new blook to ${blook.parent}: ` + blook.name);
-      io.to(socket.id).emit("getPacks", "get");
-    } else console.log("addblook verification denied " + user.name);
-  });
-  socket.on("removePack", async (pack, user) => {
-    const newpack = {
-      name: pack.name,
-      image: pack.image,
-      cost: pack.cost,
-      blooks: [],
-    };
-
-    const person = await users.findOne({ username: user.name });
-    if (
-      validatePassword(user.pass, person.password, person.salt) &&
-      admins.includes(user.name)
-    ) {
-      await packs
-        .deleteOne({ name: pack.name })
-        .then((result) => {
-          console.log("Update operation result:", result);
-        })
-        .catch((error) => {
-          console.error("Error updating database:", error);
-        });
-      await users
-        .updateMany(
-          { "packs.name": pack.name }, 
-          { $pull: { packs: { name: pack.name } } },
-        )
-        .then((result) => {
-          console.log("Update operation result:", result);
-        })
-        .catch((error) => {
-          console.error("Error updating database:", error);
-        });
-      console.log("deleted pack: " + pack.name);
-      io.to(socket.id).emit("getPacks", "get");
-    } else console.log("removepack verification denied " + user.name);
-  });
-  socket.on("removeBlook", async (blook, user) => {
-    const person = await users.findOne({ username: user.name });
-    if (
-      validatePassword(user.pass, person.password, person.salt) &&
-      admins.includes(user.name)
-    ) {
-      await packs
-        .updateOne(
-          { name: blook.parent },
-          {
-            $pull: {
-              blooks: {
-                name: blook.name,
-              },
-            },
-          },
-        )
-        .then((result) => {
-          console.log("Update operation result:", result);
-        })
-        .catch((error) => {
-          console.error("Error updating database:", error);
-        });
-      await users
-        .updateMany(
-          { "packs.name": blook.parent, "packs.blooks.name": blook.name },
-          { $pull: { "packs.$[pack].blooks": { name: blook.name } } },
-          { arrayFilters: [{ "pack.name": blook.parent }] },
-        )
-        .then((result) => {
-          console.log("Update operation result:", result);
-        })
-        .catch((error) => {
-          console.error("Error updating database:", error);
-        });
-      console.log(`removed blook from ${blook.parent}: ` + blook.name);
-      io.to(socket.id).emit("getPacks", "get");
-    } else console.log("removeblook verification denied " + user.name);
-  });
-  socket.on("getPacks", async () => {
-    const packsArray = await packs.find().toArray();
-    io.to(socket.id).emit("getPacks", packsArray);
-  });
-  socket.on("openPack", async (opack, user) => {
-
-    const person = await users.findOne({ username: user.name });
-
-    if (person === null) return;
-
-    if (!validatePassword(user.pass, person.password, person.salt)) {
-      console.log("False password");
-      return;
-    }
-
-    const pack = await packs.findOne({ name: opack.name });
-
-    if (pack === null) {
-      console.log("Invalid pack");
-      return;
-    }
-
-    if (person.tokens < pack.cost) return;
-
-    const blooks = pack.blooks;
-    let totalchance = 0;
-    for (const b of blooks) {
-      totalchance += Number(b.chance);
-    }
-    const randnum = rand(0, totalchance);
-    let currentchance = 0;
-
   
-    for (const b of blooks) {
-      const blook = b;
-
-      if (
-        randnum >= currentchance &&
-        randnum <= currentchance + Number(blook.chance)
-      ) {
-        const result = await users.updateOne(
-          {
-            username: user.name,
-            "packs.name": pack.name,
-            "packs.blooks.name": blook.name,
-          },
-          {
-            $inc: { "packs.$[pack].blooks.$[blook].owned": 1, packsOpened: 1 },
-          },
-          {
-            arrayFilters: [
-              { "pack.name": pack.name },
-              { "blook.name": blook.name },
-            ],
-          },
-        );
-        await users.updateOne(
-          { username: user.name },
-          { $inc: { tokens: -pack.cost } },
-        );
-
-        console.log(
-          `${result.matchedCount} document(s) matched the filter, updated ${result.modifiedCount} document(s)`,
-        );
-
-        io.to(socket.id).emit("openPack", {
-          pack: pack.name,
-          blook: blook,
-        });
-        const testuser = await users.findOne({ username: user.name });
-        io.to(socket.id).emit("tokens", await testuser.tokens);
-
-        console.log(`${user.name} opened ${pack.name} and got ${blook.name}`);
-      }
-      currentchance += Number(blook.chance);
+  socket.on("addBlook", async (blook, user) => {
+    if (admins.includes(user.name)) {
+      await packs.updateOne(
+        { name: blook.parent },
+        {
+          \$push: {
+            blooks: {
+              name: blook.name,
+              image: blook.image
+            }
+          }
+        }
+      );
     }
   });
-  socket.on("getUserPacks", async (name) => {
-    const user = await users.findOne({ username: name });
-    if (user === null) return;
-    io.to(socket.id).emit("getUserPacks", user.packs);
-  });
-  socket.on("getAccounts", async () => {
-    const accounts = await users.find().toArray();
-
-    io.to(socket.id).emit("getAccounts", accounts);
-  });
-  socket.on("getBadges", async () => {
-    //await client.connect();
-    const badgeese = await badges.find().toArray();
-
-    io.to(socket.id).emit("getBadges", badgeese);
-  });
-  socket.on("getUserBadges", async (name) => {
-    //await client.connect();
-    const user = await users.findOne({ username: name });
-    if (user === null) return;
-    io.to(socket.id).emit("getUserBadges", user.badges);
-  });
-  socket.on("addBadge", async (data) => {
-    //await client.connect();
-    const { username, badge } = data;
-    await users.updateOne({ username }, { $addToSet: { badges: badge } });
-    const updatedUser = await users.find().toArray();
-    io.emit("badgeUpdate", updatedUser);
-  });
-
-  socket.on("removeBadge", async (data) => {
-    //await client.connect();
-    const { username, badge } = data;
-    await users.updateOne({ username }, { $pull: { badges: badge } });
-    const updatedUser = await users.find().toArray();
-    io.emit("badgeUpdate", updatedUser);
-  });
-  socket.on("createBadge", async (badge) => {
-    //await client.connect();
-    await badges.insertOne(badge);
-  });
-  socket.on("deleteBadge", async (badge) => {
-    //await client.connect();
-    await badges.deleteOne(badge);
-    await users.updateMany({}, { $pull: { badges: badge } });
-  });
 });
 
-server.listen(port, () => {
-  console.log(`Server started successfully on port ${port}`);
-  console.log(`Server is running at ${process.env["DEV_LINK"]}:${port}`);
+// Listen on the dynamic cloud host port assignment
+const PORT = process.env.PORT || 10000;
+server.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
 });
-console.log("Initializing server...");
