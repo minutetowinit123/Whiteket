@@ -5,6 +5,18 @@ const { MongoClient, ServerApiVersion } = require("mongodb");
 const axios = require("axios");
 const path = require('path');
 const session = require("express-session");
+const MongoStore = require('connect-mongo');
+
+app.use(session({
+  secret: process.env.SESSION_SECRET || '8f4d92a1c6b7e5f3a0d7c2b9e4a8f1d0c5b3a6e9f2d8c7b4a1e0f9d8c7b6a5e4',
+  resave: false,
+  saveUninitialized: false,
+  store: MongoStore.create({ 
+    mongoUrl: process.env.MONGO_URI 
+  }),
+  cookie: { maxAge: 1000 * 60 * 60 * 24 } // Keeps users logged in for 1 day
+}));
+
 const http = require("http");
 const { Server } = require("socket.io");
 const fs = require("fs");
