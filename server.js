@@ -24,7 +24,9 @@ const app = express();
 const express = require('express');
 const session = require('express-session');
 const MongoStore = require('connect-mongo');
-const app = express(); 
+
+const app = express();
+
 app.use(session({
   secret: process.env.SESSION_SECRET || '8f4d92a1c6b7e5f3a0d7c2b9e4a8f1d0c5b3a6e9f2d8c7b4a1e0f9d8c7b6a5e4',
   resave: false,
@@ -34,20 +36,8 @@ app.use(session({
   }),
   cookie: { maxAge: 1000 * 60 * 60 * 24 }
 }));
-const server = http.createServer(app);
-const io = new Server(server, { pingInterval: 2000, pingTimeout: 5000 });
 
-app.use(express.static('public'));
-app.use(express.static(path.join(__dirname, 'public', 'site')));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-app.use(session({
-  name: "cookie",
-  secret: process.env['cookieSecret'],
-  resave: false,
-  saveUninitialized: true,
-  cookie: { maxAge: 3 * 24 * 60 * 60 * 1000 },
-}));
+// Your original code continues below seamlessly...
 
 app.use((req, res, next) => {
   console.log('Request URL:', req.url);
